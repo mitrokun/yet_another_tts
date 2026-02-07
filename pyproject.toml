@@ -1,0 +1,22 @@
+[project]
+name = "wyoming-silero-server"
+version = "0.1.0"
+description = "Silero TTS server for Wyoming"
+requires-python = ">=3.9"
+dependencies = [
+    "torch",
+    "wyoming",
+    "num2words",
+    "eng_to_ipa",
+    "regex",
+    "numpy",
+    "scipy",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
