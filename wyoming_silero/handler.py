@@ -26,7 +26,7 @@ class SpeechEventHandler(AsyncEventHandler):
         wyoming_info: Info,
         cli_args,
         speech_tts: SpeechTTS,
-        voice_map: dict, # Map теперь просто name -> name для проверки
+        voice_map: dict,
         default_speaker_name: str,
         default_speech_rate: float,
         *args,
@@ -50,64 +50,81 @@ class SpeechEventHandler(AsyncEventHandler):
     async def handle_event(self, event: Event) -> bool:
         if Describe.is_type(event.type):
             await self.write_event(self.wyoming_info_event)
-            log.debug("Sent info")
             return True
 
         try:
+            # 1. ЛЕГАСИ СИНТЕЗ (Целый текст)
             if Synthesize.is_type(event.type):
+                # Если стриминг активирован, игнорируем легаси-событие, 
+                # чтобы не было двойного звука.
                 if self.is_streaming:
+                    log.debug("Streaming is active, skipping legacy Synthesize event.")
                     return True
+                
                 synthesize = Synthesize.from_event(event)
                 return await self._handle_synthesize(synthesize)
 
+            # 2. НАЧАЛО СТРИМИНГА (По предложениям)
             if SynthesizeStart.is_type(event.type):
-                stream_start = SynthesizeStart.from_event(event)
+                # Если стриминг выключен ключом в консоли, НЕ ставим флаг is_streaming
+                if not self.cli_args.streaming:
+                    log.debug("Streaming is disabled by CLI, ignoring SynthesizeStart.")
+                    return True
+
                 self.is_streaming = True
                 self.sbd = SentenceBoundaryDetector()
+                stream_start = SynthesizeStart.from_event(event)
                 self._synthesize = Synthesize(text="", voice=stream_start.voice)
-                log.debug(f"Text stream started: voice={stream_start.voice}")
+                log.debug(f"Text stream started (voice: {stream_start.voice})")
                 return True
 
+            # 3. ПОЛУЧЕНИЕ КУСОЧКА ТЕКСТА
             if SynthesizeChunk.is_type(event.type):
+                if not self.is_streaming:
+                    return True
+                
                 assert self._synthesize is not None
                 assert self.sbd is not None
+                
                 stream_chunk = SynthesizeChunk.from_event(event)
-
+                # Детектор границ предложений выдает готовые фразы по мере накопления текста
                 for sentence in self.sbd.add_chunk(stream_chunk.text):
                     log.debug(f"Synthesizing stream sentence: {sentence}")
                     self._synthesize.text = sentence
                     await self._handle_synthesize(self._synthesize)
                 return True
 
+            # 4. КОНЕЦ СТРИМИНГА
             if SynthesizeStop.is_type(event.type):
+                if not self.is_streaming:
+                    return True
+                
                 assert self._synthesize is not None
                 assert self.sbd is not None
                 
+                # Дочитываем то, что осталось в буфере
                 final_text = self.sbd.finish()
                 if final_text:
                     self._synthesize.text = final_text
                     await self._handle_synthesize(self._synthesize)
 
                 await self.write_event(SynthesizeStopped().event())
-                self.is_streaming = False
+                self.is_streaming = False # Сбрасываем флаг после завершения
                 self.sbd = None
                 self._synthesize = None
                 log.debug("Text stream stopped")
                 return True
 
-            log.warning("Unexpected event type: %s", event.type)
             return True
 
         except Exception as e:
             log.error(f"Error handling event: {e}", exc_info=True)
             await self.write_event(Error(text=str(e), code=e.__class__.__name__).event())
             self.is_streaming = False
-            self.sbd = None
-            self._synthesize = None
             return False
 
-
     async def _handle_synthesize(self, synthesize: Synthesize) -> bool:
+        """Общий метод для отправки текста в движок Silero и передачи аудио клиенту"""
         if not synthesize.text:
             return True
 
@@ -115,53 +132,32 @@ class SpeechEventHandler(AsyncEventHandler):
         speaker_name = self.default_speaker_name
         speech_rate = self.default_speech_rate
 
-        # Проверяем, есть ли запрошенный голос в нашем списке
-        if requested_voice_name:
-            if requested_voice_name in self.voice_map:
-                speaker_name = requested_voice_name
-            else:
-                log.warning(f"Voice '{requested_voice_name}' not found. Using default '{self.default_speaker_name}'.")
+        if requested_voice_name and requested_voice_name in self.voice_map:
+            speaker_name = requested_voice_name
 
-        if hasattr(synthesize, 'speech_rate') and synthesize.speech_rate is not None:
-            speech_rate = synthesize.speech_rate
-        
         text = " ".join(synthesize.text.strip().splitlines())
         
-        # Вызов синтеза Silero
+        # Вызов вашего класса SpeechTTS
         audio_bytes = await self.speech_tts.synthesize(
             text=text, speaker_name=speaker_name, speech_rate=speech_rate
         )
 
-        if audio_bytes is None:
-            log.error(f"Synthesis failed for text: {text[:50]}...")
-            await self.write_event(Error(text="TTS synthesis failed").event())
+        if not audio_bytes:
             return True
 
-        try:
-            rate = self.speech_tts.sample_rate
-            width = self.speech_tts.sample_width
-            channels = self.speech_tts.channels
+        # Отправка аудио в Wyoming
+        rate = self.speech_tts.sample_rate
+        width = self.speech_tts.sample_width
+        channels = self.speech_tts.channels
 
+        await self.write_event(AudioStart(rate=rate, width=width, channels=channels).event())
+        
+        bytes_per_chunk = width * channels * self.cli_args.samples_per_chunk
+        for i in range(0, len(audio_bytes), bytes_per_chunk):
             await self.write_event(
-                AudioStart(rate=rate, width=width, channels=channels).event()
+                AudioChunk(audio=audio_bytes[i : i + bytes_per_chunk], 
+                           rate=rate, width=width, channels=channels).event()
             )
 
-            bytes_per_sample = width * channels
-            bytes_per_chunk = bytes_per_sample * self.cli_args.samples_per_chunk
-            
-            if bytes_per_chunk > 0:
-                for i in range(0, len(audio_bytes), bytes_per_chunk):
-                    chunk = audio_bytes[i : i + bytes_per_chunk]
-                    await self.write_event(
-                        AudioChunk(audio=chunk, rate=rate, width=width, channels=channels).event()
-                    )
-            elif len(audio_bytes) > 0:
-                await self.write_event(
-                    AudioChunk(audio=audio_bytes, rate=rate, width=width, channels=channels).event()
-                )
-
-            await self.write_event(AudioStop().event())
-        except Exception as e:
-            log.error(f"Error streaming audio: {e}", exc_info=True)
-
+        await self.write_event(AudioStop().event())
         return True

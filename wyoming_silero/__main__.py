@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 DEFAULT_SPEAKER_NAME = "xenia"
 DEFAULT_SPEECH_RATE = 1.0
 MODEL_LANGUAGE = "ru-RU"
-DEFAULT_VOICE_VERSION = "5.1" # Версия модели Silero
+DEFAULT_VOICE_VERSION = "5.1"
 ATTRIBUTION_NAME = "Silero"
 ATTRIBUTION_URL = "https://github.com/snakers4/silero-models"
 PROGRAM_NAME = "silero-tts-wyoming"
@@ -30,7 +30,7 @@ SILERO_SPEAKERS = ["aidar", "baya", "kseniya", "xenia", "eugene"]
 async def main() -> None:
     parser = ArgumentParser()
     parser.add_argument(
-        "--uri", default="tcp://0.0.0.0:10205", help="unix:// or tcp://"
+        "--uri", default="tcp://0.0.0.0:10208", help="unix:// or tcp://"
     )
     parser.add_argument(
         "--debug",
@@ -45,11 +45,15 @@ async def main() -> None:
         default=DEFAULT_SPEAKER_NAME,
         help=f"Default speaker name. Options: {SILERO_SPEAKERS}"
     )
+
     parser.add_argument(
-        "--streaming",
-        action="store_true",
-        help="Enable audio streaming on sentence boundaries.",
+        "--no-streaming",
+        action="store_false",
+        dest="streaming",
+        help="Disable audio streaming on sentence boundaries.",
     )
+    parser.set_defaults(streaming=True)
+
     args = parser.parse_args()
 
     if args.debug:
@@ -59,7 +63,6 @@ async def main() -> None:
         
     log.info("Starting Silero TTS Wyoming Server")
 
-    # Инициализация движка
     try:
         speech_tts_instance = SpeechTTS()
     except Exception as e:
@@ -70,7 +73,6 @@ async def main() -> None:
         log.warning(f"Default speaker '{args.default_speaker}' not found in {SILERO_SPEAKERS}. Using '{DEFAULT_SPEAKER_NAME}'.")
         args.default_speaker = DEFAULT_SPEAKER_NAME
 
-    # Подготовка информации для Wyoming
     voices = []
     voice_map = {name: name for name in SILERO_SPEAKERS}
 
@@ -106,7 +108,7 @@ async def main() -> None:
         wyoming_info,
         args,
         speech_tts_instance,
-        voice_map, # Передаем сет имен
+        voice_map,
         args.default_speaker,
         DEFAULT_SPEECH_RATE,
     )
