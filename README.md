@@ -8,7 +8,7 @@ pip install wyoming num2words eng_to_ipa regex numpy scipy
 ```
 python3 -m wyoming_silero
 ```
-## Быстрый старт с [uv](https://docs.astral.sh/uv/getting-started/installation/)
+## [Быстрый старт](https://www.youtube.com/watch?v=HUGh9NhMNjg) с [uv](https://docs.astral.sh/uv/getting-started/installation/) 
 
 ```
 git clone https://github.com/mitrokun/yet_another_tts.git
@@ -19,3 +19,5 @@ uv run python -m wyoming_silero
 ```
 UV_CACHE_DIR=.uv_cache uv run python -m wyoming_silero
 ```
+---
+Обновленные версии модели возможно указать в `speech_tts.py`, а если требуется полностью сменить язык, тогда также придется вносить правки в main (список голосов и языковой код).
